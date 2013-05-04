@@ -74,7 +74,7 @@ typedef struct lpcontrol_data_s {
   GeneralStateChange callback;
   
   LinphoneCoreVTable *vtable;
-  LinphoneCore core_state;
+  LinphoneCore *core_state;
   
   char configfile_name[PATH_MAX];
   
@@ -96,8 +96,7 @@ static void lpc_display_warning(LinphoneCore * lc, const char *something);
 static void lpc_display_url(LinphoneCore * lc, const char *something, const char *url);
 static void lpc_call_received(LinphoneCore *lc, const char *from);
 static void lpc_prompt_for_auth(LinphoneCore *lc, const char *realm, const char *username);
-static void lpc_notify_received(LinphoneCore *lc,LinphoneFriend *fid,
-                                const char *from, const char *status, const char *img);
+static void lpc_notify_presence_received(LinphoneCore *lc,LinphoneFriend *fid);
 static void lpc_new_unknown_subscriber(LinphoneCore *lc, LinphoneFriend *lf,
                                        const char *url);
 static void lpc_bye_received(LinphoneCore *lc, const char *from);
@@ -111,10 +110,10 @@ static void lpc_text_received(LinphoneCore *lc, LinphoneChatRoom *cr,
  ***************************************************************************/
 
 LinphoneCoreVTable lpc_vtable = {
-  show:                   (ShowInterfaceCb) lpc_dummy,
+  show:                   lpc_dummy,
   inv_recv:               lpc_call_received,
   bye_recv:               lpc_bye_received, 
-  notify_recv:            lpc_notify_received,
+  notify_presence_recv:   lpc_notify_presence_received,
   new_unknown_subscriber: lpc_new_unknown_subscriber,
   auth_info_requested:    lpc_prompt_for_auth,
   display_status:         lpc_display_status,
@@ -122,8 +121,13 @@ LinphoneCoreVTable lpc_vtable = {
   display_warning:        lpc_display_warning,
   display_url:            lpc_display_url,
   display_question:       lpc_dummy,
+  call_log_updated:       lpc_dummy,
   text_received:          lpc_text_received,
-  general_state:          NULL
+  general_state:          NULL,
+  dtmf_received:          NULL,
+  refer_received:         NULL,
+  buddy_info_updated:     NULL,
+  notify_recv:            NULL
 };
 
 
@@ -172,9 +176,8 @@ static void lpc_prompt_for_auth(LinphoneCore *lc, const char *realm, const char 
 }
 
 
-static void lpc_notify_received(LinphoneCore *lc,LinphoneFriend *fid,
-                                const char *from, const char *status, const char *img) {
-  printf("Friend %s is %s\n", from, status);
+static void lpc_notify_presence_received(LinphoneCore *lc,LinphoneFriend *fid) {
+  printf("Friend presence change\n");
   // todo: update Friend list state (unimplemented)
 }
 
@@ -207,7 +210,7 @@ static void lpc_text_received(LinphoneCore *lc, LinphoneChatRoom *cr,
 void lpcontrol_timer_callback(int id, int group, void *private_data) {
   lpcontrol_data_t *lpd_ptr = private_data;
   
-  linphone_core_iterate(&(lpd_ptr->core_state));
+  linphone_core_iterate(lpd_ptr->core_state);
 }
 
 /*****************************************************************/
@@ -242,8 +245,9 @@ void override_soundcards()
 {
   ylsysfs_model model;
   int card;
-  char pcm_name[15];
+  char *pcm_name = NULL;
   char *ringer;
+  const char* devid;
   
   model = ylsysfs_get_model();
 
@@ -254,31 +258,33 @@ void override_soundcards()
 
   card = ylsysfs_get_alsa_card();
   if (card >= 0) {
-    snprintf(pcm_name, sizeof(pcm_name), "plughw:%d", card);
+    // get ALSA sound card name
+    snd_card_get_name(card, &pcm_name);
     lpstates_data.sndcard = ms_alsa_card_new_custom(pcm_name, pcm_name);
+    devid = ms_snd_card_get_string_id(lpstates_data.sndcard);
 
-    lpstates_data.core_state.sound_conf.play_sndcard = 
-      lpstates_data.core_state.sound_conf.capt_sndcard = lpstates_data.sndcard;
+    linphone_core_set_playback_device(lpstates_data.core_state, devid);
+    linphone_core_set_capture_device(lpstates_data.core_state, devid);
 
     if (ringer) {
-      linphone_core_set_ringer_device(&(lpstates_data.core_state), ringer);
-      if (!lpstates_data.core_state.sound_conf.ring_sndcard) {
-        printf("Ringer device %s not found, falling back to handset's ringer\n");
-        lpstates_data.core_state.sound_conf.ring_sndcard = lpstates_data.sndcard;
+      linphone_core_set_ringer_device(lpstates_data.core_state, ringer);
+      if (!linphone_core_get_ringer_device(lpstates_data.core_state)) {
+        printf("Ringer device %s not found, falling back to handset's ringer\n", ringer);
+        linphone_core_set_ringer_device(lpstates_data.core_state, devid);
       }
     }
     else
-      lpstates_data.core_state.sound_conf.ring_sndcard = lpstates_data.sndcard;
+      linphone_core_set_ringer_device(lpstates_data.core_state, devid);
 
     printf("ringer device = %s\n",
-           linphone_core_get_ringer_device(&(lpstates_data.core_state)));
+           linphone_core_get_ringer_device(lpstates_data.core_state));
     printf("playback device = %s\n",
-           linphone_core_get_playback_device(&(lpstates_data.core_state)));
+           linphone_core_get_playback_device(lpstates_data.core_state));
   }
 
   if (!ringer && ((model == YL_MODEL_P1K) || (model == YL_MODEL_P1KH))) {
     /* we use the ringer on the handset */
-    linphone_core_set_ring(&(lpstates_data.core_state), "/dev/null");
+    linphone_core_set_ring(lpstates_data.core_state, "/dev/null");
   }
 }
 
@@ -295,24 +301,24 @@ void lpstates_submit_command(lpstates_command_t command, char *arg)
     case LPCOMMAND_STARTUP:
       yp_ml_schedule_periodic_timer(LPCONTROL_TIMER_ID, 200, 1,
                                     lpcontrol_timer_callback, &lpstates_data);
-      linphone_core_init(&(lpstates_data.core_state), lpstates_data.vtable,
-                         lpstates_data.configfile_name, &lpstates_data);
-      setLinphoneCore(&(lpstates_data.core_state));
+      lpstates_data.core_state = linphone_core_new(lpstates_data.vtable,
+          lpstates_data.configfile_name, 0, &lpstates_data);
+      setLinphoneCore(lpstates_data.core_state);
       override_soundcards();
       break;
       
     case LPCOMMAND_SHUTDOWN:
-      linphone_core_terminate_call(&(lpstates_data.core_state), NULL);
-      linphone_core_uninit(&(lpstates_data.core_state));
+      linphone_core_terminate_call(lpstates_data.core_state, NULL);
+      linphone_core_destroy(lpstates_data.core_state);
       break;
       
     case LPCOMMAND_CALL:
-      linphone_core_invite(&(lpstates_data.core_state), arg);
+      linphone_core_invite(lpstates_data.core_state, arg);
       break;
       
     case LPCOMMAND_DTMF:
       while (isdigit(*cp) || *cp == '#' || *cp == '*') {
-        linphone_core_send_dtmf(&(lpstates_data.core_state), *cp);
+        linphone_core_send_dtmf(lpstates_data.core_state, *cp);
         cp++;
         if (*cp)
           usleep(200000);
@@ -320,43 +326,43 @@ void lpstates_submit_command(lpstates_command_t command, char *arg)
       break;
       
     case LPCOMMAND_PICKUP:
-      linphone_core_accept_call(&(lpstates_data.core_state), NULL);
+      linphone_core_accept_call(lpstates_data.core_state, NULL);
       break;
       
     case LPCOMMAND_HANGUP:
-      linphone_core_terminate_call(&(lpstates_data.core_state), NULL);
+      linphone_core_terminate_call(lpstates_data.core_state, NULL);
       break;
       
     case LPCOMMAND_RING_VOLUP:
       /*
-      level = linphone_core_get_ring_level(&(lpstates_data.core_state));
+      level = linphone_core_get_ring_level(lpstates_data.core_state);
       level += RING_VOL_STEP;
       if (level > 100) level = 100;
-      linphone_core_set_ring_level(&(lpstates_data.core_state), level);
+      linphone_core_set_ring_level(lpstates_data.core_state, level);
       */
       break;
     
     case LPCOMMAND_RING_VOLDN:
       /*
-      level = linphone_core_get_ring_level(&(lpstates_data.core_state));
+      level = linphone_core_get_ring_level(lpstates_data.core_state);
       level -= RING_VOL_STEP;
       if (level < RING_VOL_MIN) level = RING_VOL_MIN;
-      linphone_core_set_ring_level(&(lpstates_data.core_state), level);
+      linphone_core_set_ring_level(lpstates_data.core_state, level);
       */
       break;
     
     case LPCOMMAND_SPKR_VOLUP:
-      level = linphone_core_get_play_level(&(lpstates_data.core_state));
+      level = linphone_core_get_play_level(lpstates_data.core_state);
       level += SPKR_VOL_STEP;
       if (level > 100) level = 100;
-      linphone_core_set_play_level(&(lpstates_data.core_state), level);
+      linphone_core_set_play_level(lpstates_data.core_state, level);
       break;
     
     case LPCOMMAND_SPKR_VOLDN:
-      level = linphone_core_get_play_level(&(lpstates_data.core_state));
+      level = linphone_core_get_play_level(lpstates_data.core_state);
       level -= SPKR_VOL_STEP;
       if (level < SPKR_VOL_MIN) level = SPKR_VOL_MIN;
-      linphone_core_set_play_level(&(lpstates_data.core_state), level);
+      linphone_core_set_play_level(lpstates_data.core_state, level);
       break;
     
     default:
