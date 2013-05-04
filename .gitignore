@@ -10,3 +10,5 @@ config.h
 config
 yeaphone-*.tar.gz
 *.cache
+stamp-h1
+yeaphone.spec
