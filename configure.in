@@ -18,7 +18,7 @@ AM_PROG_CC_C_O
 
 # Checks for libraries.
 
-PKG_CHECK_MODULES(LINPHONE,linphone >= 1.7.0,,exit)
+PKG_CHECK_MODULES(LINPHONE,linphone >= 3.3.0,,exit)
 AC_SUBST(LINPHONE_CFLAGS)
 AC_SUBST(LINPHONE_LIBS)
 AC_MSG_CHECKING([for liblinphone library path])

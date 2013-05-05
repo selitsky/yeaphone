@@ -31,7 +31,7 @@ Source:		http://download.devbase.at/voip/%{name}-%{version}.tar.gz
 # RPM info
 #Provides: 
 BuildRequires:  libosip2-devel
-BuildRequires:  linphone-devel >= 1.7.1
+BuildRequires:  linphone-devel >= 3.3.0
 BuildRequires:  ortp-devel >= 0.13.1
 
 BuildRequires:  readline-devel
